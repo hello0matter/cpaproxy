@@ -1,0 +1,5 @@
+{
+  "log_dir": "/root/.cli-proxy-api/logs",
+  "data_dir": "/root/cpaproxy/data",
+  "interval": 20
+}
