@@ -130,3 +130,80 @@ sudo bash install.sh uninstall      # 只删服务，数据目录保留
 - 服务日志走 journald，不再单独写文件；脚本自己的数据仍在 `data_dir`。
 - 脚本退出会自动重启（`Restart=always`，间隔 10 秒）。
 - 确认 `/root/.cli-proxy-api/logs` 存在且 cliproxy 在往里面写日志；不存在时脚本会正常空转，不会报错退出。
+
+---
+
+## Windows 启动项小工具 set_run.ps1
+
+`set_run.ps1` 是一个可在 Windows 上操作的启动项小工具，专门处理当前用户登录自启键：
+
+```
+HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+```
+
+它的主要用途：**在没有远端目标机 shell 的情况下，直接生成一条可以粘贴到对方机器上执行的单行命令**，或者把某个 exe 写进本机 Run 键实现登录自启。
+
+### 命令一览
+
+| 命令 | 作用 |
+| --- | --- |
+| `copy [名字]` | **默认命令**。生成单行命令并复制到剪贴板，**不检查文件是否存在**，可以对任意名字凭空生成 |
+| `write [名字]` | 真正写入 Run 键（登录自启），要求目标文件真实存在，写完会回读校验 |
+| `delete [名字]` | 删除 Run 项，会二次确认 |
+| `list` | 列出 Cache 目录里的 exe（**含隐藏文件**）和 Run 键里现有的项 |
+| `help` | 显示内置帮助 |
+
+### 参数
+
+- `-User <用户名>`：指定 `C:\Users\<用户名>`，用于操作**目标机不是本机**的情况。
+- `-Path <目录>`：直接指定 exe 所在目录，跳过用户名询问。
+
+只给 exe 名字（如 `LocaleMgr`）时，会交互询问用户名，**直接回车 = 当前登录用户**。也可以输入序号（`2`）或完整路径。
+
+### 用户名与大小写
+
+- 本机真实存在的目录，会自动还原成磁盘上的**真实大小写**；
+- 本机不存在的目录（多为操作远端目标机），按你输入的**大小写原样保留**；
+- Windows 文件系统本身不区分大小写，`cache` 与 `Cache` 是同一个目录。
+
+### 典型用法
+
+```powershell
+# 交互选择（等价 copy），复制到剪贴板
+.\set_run.ps1
+
+# 凭空生成 Cache\SvcMonitor.exe 的启动命令（即使文件不存在）
+.\set_run.ps1 copy SvcMonitor
+
+# 复制真实文件的启动命令
+.\set_run.ps1 copy LocaleMgr
+
+# 指定目标机的用户名
+.\set_run.ps1 copy LocaleMgr -User WDKRemoteUser
+
+# 直接指定目录
+.\set_run.ps1 copy LocaleMgr -Path "C:\Users\X\AppData\Local\Cache"
+
+# 真正写入本机 Run 键（要求文件存在）
+.\set_run.ps1 write LocaleMgr
+
+# 删除 Run 项
+.\set_run.ps1 delete LocaleMgr
+
+# 查看候选与现有项
+.\set_run.ps1 list
+```
+
+### 生成的命令长什么样
+
+`copy` 复制到剪贴板的内容是形如下面的一行（可直接在目标机 CMD/PowerShell 里粘贴执行）：
+
+```powershell
+Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name LocaleMgr -Value '"C:\Users\WDKRemoteUser\AppData\Local\Cache\LocaleMgr.exe"'
+```
+
+### 注意事项
+
+- 候选列表用 `-Force` 枚举，**包含隐藏文件**（Hidden/System 也能看到）。
+- `write` 会校验：路径长度、是否含换行、路径是否存在，写完回读比对。
+- 脚本文件请保持 **UTF-8 with BOM** 保存，否则 Windows PowerShell 5.1 按 GBK 读取会报 `Missing closing '}'`。
