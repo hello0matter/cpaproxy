@@ -308,6 +308,63 @@ def run_gui(cfg, cfg_file):
 
     conn = {"c": None}
 
+    def copy_text(text):
+        if not text:
+            return
+        try:
+            root.clipboard_clear()
+            root.clipboard_append(text)
+            status.config(text="已复制到剪贴板")
+        except Exception as e:
+            messagebox.showerror("复制失败", str(e))
+
+    def rows_as_text(only_selected=False):
+        sel = tree.selection() if only_selected else tree.get_children()
+        if not sel:
+            return ""
+        items = [tree.item(i, "values") for i in sel]
+        return "\n".join("\t".join(str(x) for x in row) for row in items)
+
+    def copy_selected():
+        txt = rows_as_text(True)
+        copy_text(txt or rows_as_text(False))
+
+    def copy_all():
+        txt = rows_as_text(False)
+        if not txt:
+            messagebox.showinfo("提示", "没有可复制的结果")
+            return
+        header = "\t".join(str(tree.heading(c)["text"]) for c in cols)
+        copy_text(header + "\n" + txt)
+
+    def copy_cell_text(row, col):
+        if not row or not col:
+            return
+        try:
+            idx = int(col.replace("#", "")) - 1
+        except Exception:
+            return
+        if 0 <= idx < len(cols):
+            copy_text(str(tree.item(row, "values")[idx]))
+
+    def select_all(event=None):
+        tree.selection_set(tree.get_children())
+        return "break"
+
+    def on_double_click(event):
+        copy_cell_text(tree.identify_row(event.y), tree.identify_column(event.x))
+
+    def show_menu(event):
+        row = tree.identify_row(event.y)
+        if row:
+            tree.selection_set(row)
+        menu = tk.Menu(root, tearoff=0)
+        menu.add_command(label="复制选中行", command=copy_selected)
+        menu.add_command(label="复制全部结果", command=copy_all)
+        menu.add_separator()
+        menu.add_command(label="导出 CSV…", command=do_export)
+        menu.tk_popup(event.x_root, event.y_root)
+
     def get_conn():
         if conn["c"] is None:
             conn["c"] = connect(cfg)
@@ -401,8 +458,15 @@ def run_gui(cfg, cfg_file):
     ttk.Button(btns, text="从文件导入", command=do_file).pack(side="left", padx=4)
     ttk.Button(btns, text="导出 CSV", command=do_export).pack(side="left", padx=4)
     ttk.Button(btns, text="测试连接", command=do_test).pack(side="left", padx=4)
+    ttk.Button(btns, text="复制结果", command=copy_all).pack(side="left", padx=4)
 
     entry.bind("<Control-Return>", lambda e: (do_query(), "break")[1])
+    tree.bind("<Control-c>", lambda e: (copy_selected(), "break")[1])
+    tree.bind("<Control-C>", lambda e: (copy_selected(), "break")[1])
+    tree.bind("<Control-a>", select_all)
+    tree.bind("<Control-A>", select_all)
+    tree.bind("<Double-1>", on_double_click)
+    tree.bind("<Button-3>", show_menu)
 
     do_test()
     root.mainloop()
