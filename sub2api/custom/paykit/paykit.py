@@ -23,7 +23,7 @@ DEFAULT_CONF = {
     "site_name": "666ok", "qr_title": "支付宝收款码",
     "payee_note": "转账时请在备注里填写下方「备注码」，否则无法对账",
     "notice": "", "currency": "CNY",
-    "amount_presets": [10, 50, 100, 200],
+    "amount_presets": [1, 2, 5, 10, 20, 30, 50, 70, 100, 120, 150, 200],
     # true: 用户可以自己填金额；false: 只能选 amount_presets 里的固定档位
     "allow_custom_amount": True,
     "plans": [
@@ -106,6 +106,19 @@ def presets(conn):
         except Exception:  # noqa
             pass
     return [float(x) for x in (CONF.get("amount_presets") or [])]
+
+
+def site_plans(conn):
+    """套餐以后台编辑的为准；没编辑过就用 paykit.json 里的。"""
+    v = kv_get(conn, "site_plans")
+    if v:
+        try:
+            arr = json.loads(v)
+            if isinstance(arr, list) and arr:
+                return arr
+        except Exception:  # noqa
+            pass
+    return CONF.get("plans") or []
 
 
 def new_code(conn):
@@ -415,6 +428,8 @@ class H(BaseHTTPRequestHandler):
             return self.login()
         if p == b + "/admin/settings":
             return self.admin_settings()
+        if p == b + "/admin/plans/save":
+            return self.admin_plans_save()
         if p == b + "/admin/qr-upload":
             return self.qr_upload()
         if p == b + "/admin/qr-toggle":
@@ -441,14 +456,17 @@ class H(BaseHTTPRequestHandler):
         show_topup = custom_ok or bool(tiers)
 
         # ---- 套餐卡片 ----
+        plan_list = site_plans(conn)
         plans = ""
-        for i, p in enumerate(CONF["plans"]):
+        for i, p in enumerate(plan_list):
             feats = "".join(f"<li>{x}</li>" for x in (p.get("features") or []))
-            hero = " hero" if i == len(CONF["plans"]) - 1 else ""
+            hero = " hero" if i == len(plan_list) - 1 else ""
             btn = "hero-btn" if hero else ""
+            pv = float(p["amount"])
+            pv_txt = int(pv) if pv == int(pv) else pv
             plans += f"""<div class="plan{hero}">
   <span class="badge">{p.get('badge') or p['label']}</span>
-  <div class="price">{CONF['currency']} {p['amount']}<small>/ {p.get('days',0)} 天</small></div>
+  <div class="price">{CONF['currency']} {pv_txt}<small>/ {p.get('days',0)} 天</small></div>
   <div class="desc">{p.get('desc','')}</div>
   <ul class="feat">{feats}</ul>
   <form method="post" action="{self.rel('/create')}">
@@ -533,8 +551,10 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
             idx = int(f.get("plan") or -1)
         except ValueError:
             idx = -1
-        if 0 <= idx < len(CONF["plans"]):
-            p = CONF["plans"][idx]
+        conn0 = db()
+        plan_list = site_plans(conn0)
+        if 0 <= idx < len(plan_list):
+            p = plan_list[idx]
             amount, days, gid, label = float(p["amount"]), int(p.get("days", 0)), int(p.get("group_id", 0)), p["label"]
         else:
             conn0 = db()
@@ -746,7 +766,8 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
             return (f"<span class='tag {'t-paid' if ok else 't-rejected'}' style='margin:0 6px 6px 0'>"
                     f"{key} {CONF['currency']} {shown} {'✓' if ok else '缺码'}</span>")
 
-        plan_prices = sorted({round(float(p["amount"]), 2) for p in CONF["plans"]})
+        admin_plans = site_plans(conn)
+        plan_prices = sorted({round(float(p["amount"]), 2) for p in admin_plans})
         plan_tags = "".join(tag(a, has_code(a), "套餐") for a in plan_prices)
         n_generic = conn.execute("SELECT COUNT(*) c FROM qrcodes WHERE enabled=1 AND amount=0").fetchone()["c"]
         if custom_ok:
@@ -760,7 +781,8 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
                     f"<div style='margin-top:6px' class='muted'>套餐价：</div><div style='margin-top:6px'>{plan_tags}</div>"
                     f"{topup_line}")
 
-        tier_opts = sorted({10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0}
+        TIER_CHOICES = [1, 2, 5, 10, 20, 30, 50, 70, 100, 120, 150, 200]
+        tier_opts = sorted({float(x) for x in TIER_CHOICES}
                            | set(plan_prices)
                            | {round(float(t), 2) for t in tiers})
         opts_html = "".join(
@@ -769,7 +791,62 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
             f'{CONF["currency"]} {int(a) if a == int(a) else a}</option>'
             for a in tier_opts)
 
-        body = f"""<div class="card"><h2>收款方式</h2>
+        plan_rows = ""
+        for p in admin_plans:
+            plan_rows += f"""<tr>
+ <td><input class="pn" value="{p.get('label','')}" placeholder="DeepSeek 日卡"></td>
+ <td><input class="pb" value="{p.get('badge','')}" placeholder="日卡" style="width:70px"></td>
+ <td><input class="pp" value="{p.get('amount','')}" inputmode="decimal" style="width:90px"></td>
+ <td><input class="pd" value="{p.get('days',0)}" inputmode="numeric" style="width:70px"></td>
+ <td><input class="pdesc" value="{p.get('desc','')}" placeholder="1 天无限量"></td>
+ <td><input class="pf" value="{','.join(p.get('features') or [])}" placeholder="无限流量,优先线路"></td>
+ <td><input class="pg" value="{p.get('group_id',0)}" inputmode="numeric" style="width:70px"></td>
+ <td><button type="button" class="sm danger" onclick="this.closest('tr').remove()">删</button></td>
+</tr>"""
+        plans_card = f"""<div class="card"><h2>套餐（价格 / 天数）</h2>
+<div class="muted">价格随便定，前端就按这里展示；用户拿到的权益只跟「天数」有关（1=日卡、7=周卡、30=月卡、14=两周…）。
+分组 ID 决定开通到哪个分组（当前 8888ok官转 = 5）。</div>
+<table style="margin-top:12px">
+<thead><tr><th>名称</th><th>徽标</th><th>价格</th><th>天数</th><th>描述</th><th>权益(逗号)</th><th>分组ID</th><th></th></tr></thead>
+<tbody id="planBody">{plan_rows}</tbody></table>
+<div style="display:flex;gap:8px;margin-top:12px">
+ <button type="button" class="sm ghost" onclick="addPlanRow()">+ 新增一档</button>
+ <button type="button" class="sm" onclick="savePlans()">保存套餐</button>
+</div>
+<div class="muted" id="pmsg" style="margin-top:8px"></div>
+<script>
+function rowHtml(){{return `<tr>
+ <td><input class="pn" placeholder="DeepSeek 日卡"></td>
+ <td><input class="pb" placeholder="日卡" style="width:70px"></td>
+ <td><input class="pp" placeholder="9.9" inputmode="decimal" style="width:90px"></td>
+ <td><input class="pd" placeholder="1" inputmode="numeric" style="width:70px"></td>
+ <td><input class="pdesc" placeholder="1 天无限量"></td>
+ <td><input class="pf" placeholder="无限流量,优先线路"></td>
+ <td><input class="pg" placeholder="5" inputmode="numeric" style="width:70px"></td>
+ <td><button type="button" class="sm danger" onclick="this.closest('tr').remove()">删</button></td>
+</tr>`;}}
+function addPlanRow(){{document.getElementById('planBody').insertAdjacentHTML('beforeend',rowHtml());}}
+async function savePlans(){{
+ const rows=[...document.querySelectorAll('#planBody tr')].map(tr=>({{
+   label:tr.querySelector('.pn').value.trim(),
+   badge:tr.querySelector('.pb').value.trim(),
+   amount:parseFloat(tr.querySelector('.pp').value||'0'),
+   days:parseInt(tr.querySelector('.pd').value||'0',10),
+   desc:tr.querySelector('.pdesc').value.trim(),
+   features:tr.querySelector('.pf').value.split(',').map(s=>s.trim()).filter(Boolean),
+   group_id:parseInt(tr.querySelector('.pg').value||'0',10)
+ }})).filter(p=>p.label&&p.amount>0);
+ const res=await fetch('{self.rel("/admin/plans/save")}',{{method:'POST',credentials:'same-origin',
+   headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{plans:rows}})}});
+ const j=await res.json(); const m=document.getElementById('pmsg');
+ m.textContent=j.ok?('✅ 已保存 '+j.count+' 个套餐，正在刷新…'):('❌ '+(j.error||'失败'));
+ if(j.ok)setTimeout(()=>location.reload(),700);
+}}
+</script></div>
+
+"""
+
+        body = f"""{plans_card}<div class="card"><h2>收款方式</h2>
 <div class="muted">控制用户「余额充值」时能不能自己填金额，保存后立即生效（前端展示与后端校验同时改）。</div>
 <form method="post" action="{self.rel('/admin/settings')}" onsubmit="return collectTiers()" style="margin-top:12px">
   <label>充值金额模式</label>
@@ -845,6 +922,39 @@ async function up(){{
         self.send_response(302)
         self.send_header("Location", self.rel("/admin"))
         self.end_headers()
+
+    def admin_plans_save(self):
+        if not self.logged_in():
+            return self.js({"ok": False, "error": "未登录"}, 401)
+        d = self.jbody()
+        rows = d.get("plans") or []
+        clean = []
+        for p in rows[:20]:
+            try:
+                amount = round(float(p.get("amount") or 0), 2)
+                days = int(p.get("days") or 0)
+            except (TypeError, ValueError):
+                continue
+            label = (p.get("label") or "").strip()[:40]
+            if not label or amount <= 0 or days < 0:
+                continue
+            feats = p.get("features") or []
+            if isinstance(feats, str):
+                feats = [x.strip() for x in feats.split(",") if x.strip()]
+            clean.append({
+                "label": label,
+                "badge": (p.get("badge") or label)[:10],
+                "amount": amount,
+                "days": days,
+                "desc": (p.get("desc") or "")[:120],
+                "features": [str(x)[:20] for x in feats][:6],
+                "group_id": int(p.get("group_id") or 0),
+            })
+        if not clean:
+            return self.js({"ok": False, "error": "至少要有一个有效套餐（名称+价格>0）"}, 400)
+        conn = db()
+        kv_set(conn, "site_plans", json.dumps(clean, ensure_ascii=False))
+        return self.js({"ok": True, "count": len(clean)})
 
     def qr_upload(self):
         if not self.logged_in():
