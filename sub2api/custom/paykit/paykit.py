@@ -301,6 +301,17 @@ a{color:var(--brand-dark);text-decoration:none}
 .bad{background:#fff1f2;border-color:#fecdd3;color:#9f1239}
 .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:26px}
 .login{max-width:400px;margin:8vh auto 0}
+.dd{position:relative}
+.dd-btn{width:100%;text-align:left;background:#fff;border:1px solid #d7dee8;border-radius:12px;color:var(--ink);
+  font-weight:500;padding:12px 13px;cursor:pointer;display:flex;justify-content:space-between;gap:8px}
+.dd-btn:hover{background:#fff;border-color:#b9c7d8}
+.dd-panel{display:none;position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:20;background:#fff;
+  border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 40px -20px rgba(16,24,40,.35);
+  max-height:260px;overflow:auto;padding:8px}
+.dd.open .dd-panel{display:block}
+.dd-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;font-size:14px;font-weight:500;margin:0;cursor:pointer}
+.dd-item:hover{background:#f1f5f9}
+.dd-item input{width:16px;height:16px;margin:0}
 """
 
 
@@ -708,6 +719,10 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
 </div>"""))
         conn = db()
         qrs = conn.execute("SELECT * FROM qrcodes ORDER BY enabled DESC, id DESC").fetchall()
+        bind_choices = sorted({1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 50.0, 70.0, 100.0, 120.0, 150.0, 200.0}
+                              | {round(float(p["amount"]), 2) for p in (CONF.get("plans") or [])}
+                              | {round(float(t), 2) for t in presets(conn)}
+                              | {round(float(q["amount"]), 2) for q in qrs if float(q["amount"] or 0) > 0})
         thumbs = []
         for q in qrs:
             on = q["enabled"]
@@ -724,8 +739,12 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
    · {time.strftime('%m-%d %H:%M', time.localtime(q['created_at']))}</div>
  <form method="post" action="{self.rel('/admin/qr-bind')}" style="display:flex;gap:6px;margin-top:8px">
    <input type="hidden" name="id" value="{q['id']}">
-   <input name="amount" value="{'' if amt == 0 else (int(amt) if amt == int(amt) else amt)}"
-          placeholder="绑定金额，0=通用" style="padding:7px 9px;font-size:13px">
+   <select name="amount" style="padding:7px 9px;font-size:13px">
+     <option value="0"{' selected' if amt == 0 else ''}>通用（不限额）</option>
+     {''.join(f'<option value="{int(a) if a == int(a) else a}"'
+              f'{" selected" if abs(amt - a) < 0.005 else ""}>{CONF["currency"]} {int(a) if a == int(a) else a}</option>'
+              for a in bind_choices)}
+   </select>
    <button class="sm ghost">绑定</button>
  </form>
  <div class="ops">
@@ -793,10 +812,12 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
 
         plan_rows = ""
         for p in admin_plans:
+            pv = float(p.get("amount") or 0)
+            pv_t = int(pv) if pv == int(pv) else pv
             plan_rows += f"""<tr>
  <td><input class="pn" value="{p.get('label','')}" placeholder="DeepSeek 日卡"></td>
  <td><input class="pb" value="{p.get('badge','')}" placeholder="日卡" style="width:70px"></td>
- <td><input class="pp" value="{p.get('amount','')}" inputmode="decimal" style="width:90px"></td>
+ <td><input class="pp" value="{pv_t}" inputmode="decimal" style="width:90px"></td>
  <td><input class="pd" value="{p.get('days',0)}" inputmode="numeric" style="width:70px"></td>
  <td><input class="pdesc" value="{p.get('desc','')}" placeholder="1 天无限量"></td>
  <td><input class="pf" value="{','.join(p.get('features') or [])}" placeholder="无限流量,优先线路"></td>
@@ -848,23 +869,39 @@ async function savePlans(){{
 
         body = f"""{plans_card}<div class="card"><h2>收款方式</h2>
 <div class="muted">控制用户「余额充值」时能不能自己填金额，保存后立即生效（前端展示与后端校验同时改）。</div>
-<form method="post" action="{self.rel('/admin/settings')}" onsubmit="return collectTiers()" style="margin-top:12px">
+<form method="post" action="{self.rel('/admin/settings')}" onsubmit="return refreshTierText()||true" style="margin-top:12px">
   <label>充值金额模式</label>
   <select name="allow_custom">
     <option value="1"{sel_yes}>允许自定义金额（用户自己填，用不限额收款码）</option>
     <option value="0"{sel_no}>仅固定档位（用户只能选下面金额）</option>
   </select>
-  <label>固定档位（下拉可多选，仅「仅固定档位」模式生效）</label>
-  <select id="tierSel" multiple size="7" style="padding:8px">
-    {opts_html}
-  </select>
+  <label>固定档位（下拉多选，仅「仅固定档位」模式生效）</label>
+  <div class="dd" id="tierDD">
+    <button type="button" class="dd-btn" onclick="document.getElementById('tierDD').classList.toggle('open')">
+      <span id="tierText">—</span><span>▾</span>
+    </button>
+    <div class="dd-panel">
+      {''.join(f'<label class="dd-item"><input type="checkbox" class="tierCb" value="{int(a) if a == int(a) else a}"'
+               f'{" checked" if any(abs(a - t) < 0.005 for t in tiers) else ""}> CNY {int(a) if a == int(a) else a}</label>'
+               for a in tier_opts)}
+    </div>
+  </div>
   <input type="hidden" name="presets" id="tierHidden" value="{tiers_str}">
   <div class="muted">套餐卡片价格不受这里影响，始终按卡片价收款。</div>
   <button>保存</button>
 </form></div>
 <script>
-function collectTiers(){{var s=document.getElementById('tierSel');
- document.getElementById('tierHidden').value=Array.from(s.selectedOptions).map(o=>o.value).join(',');return true;}}
+function refreshTierText(){{
+  var sel=[...document.querySelectorAll('.tierCb:checked')].map(c=>'CNY '+c.value);
+  document.getElementById('tierText').textContent = sel.length? sel.join('、') : '未选择';
+  document.getElementById('tierHidden').value = [...document.querySelectorAll('.tierCb:checked')].map(c=>c.value).join(',');
+}}
+document.querySelectorAll('.tierCb').forEach(c=>c.addEventListener('change',refreshTierText));
+document.addEventListener('click',function(e){{
+  var dd=document.getElementById('tierDD');
+  if(dd && !dd.contains(e.target)) dd.classList.remove('open');
+}});
+refreshTierText();
 </script>
 
 <div class="card"><h2>支付宝收款码</h2>
