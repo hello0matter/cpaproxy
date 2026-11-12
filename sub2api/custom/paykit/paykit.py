@@ -473,8 +473,8 @@ class H(BaseHTTPRequestHandler):
 
         custom_ok = allow_custom_amount(conn)
         tiers = presets(conn)
-        # 固定档位模式：只卖套餐，不再显示「余额充值」区块
-        show_topup = custom_ok
+        # 固定档位模式：档位充值排在最前面，套餐在下面
+        show_topup = custom_ok or bool(tiers)
 
         # ---- 套餐卡片 ----
         plan_list = site_plans(conn)
@@ -529,25 +529,45 @@ class H(BaseHTTPRequestHandler):
 <div class="card">
   <label>你的登录邮箱（必填）</label>
   <input id="emailMain" type="email" placeholder="你在 {CONF['site_name']} 注册的邮箱" oninput="syncEmail(this.value)">
-  <div class="muted">用于自动到账，请填注册时用的邮箱</div>
+  <div class="muted" id="autoTip">用于自动到账；如果你已登录 {CONF['site_name']}，这里会自动填好</div>
 </div>
 <div class="tabs">
-  <a class="on" href="{self.rel('/')}">订阅套餐</a>
-{tab_topup}
+  <a class="on" href="#topup">充值</a>
+  <a href="#plans">订阅套餐</a>
 </div>
-<div class="card"><h2>订阅套餐</h2>
+{topup}
+<div class="card" id="plans"><h2>订阅套餐</h2>
 <div class="muted" style="margin-bottom:14px">付款后自动开通（管理员核对到账，通常几分钟内）。</div>
 <div class="grid">{plans}</div></div>
-{topup}
 <script>
 function syncEmail(v){{document.querySelectorAll('.js-email').forEach(el=>el.value=v);}}
-function setAmt(v){{var i=document.getElementById('amt');if(i)i.value=v;
- document.querySelectorAll('.presets button').forEach(b=>b.classList.remove('on'));
- if(window.event&&event.target)event.target.classList.add('on');}}
+function setAmt(v){{var i=document.getElementById('amt');if(i)i.value=v;}}
 document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',function(e){{
   var m=document.getElementById('emailMain');
   if(m&&!m.value.trim()){{e.preventDefault();m.focus();alert('请先填写你的登录邮箱');}}
 }}));
+// 自动识别已登录的 sub2api 账号，省得用户手动填
+(async function(){{
+  try{{
+    var email='';
+    var u=null;
+    try{{u=JSON.parse(localStorage.getItem('auth_user')||'null');}}catch(e){{}}
+    if(u&&u.email) email=u.email;
+    if(!email){{
+      var tok=localStorage.getItem('auth_token');
+      if(tok){{
+        var r=await fetch('/api/v1/user/profile',{{headers:{{'Authorization':'Bearer '+tok}}}});
+        if(r.ok){{var j=await r.json();email=(j&&j.data&&j.data.email)||'';}}
+      }}
+    }}
+    if(email){{
+      var m=document.getElementById('emailMain');
+      if(m){{m.value=email;syncEmail(email);}}
+      var t=document.getElementById('autoTip');
+      if(t) t.textContent='已识别登录账号：'+email+'（要给别的账号充值可直接改上面的邮箱）';
+    }}
+  }}catch(e){{}}
+}})();
 </script>"""
         self.html(page("扫码充值", body))
 
