@@ -65,6 +65,10 @@ def db():
         enabled INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS kv (
         key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')""")
+    # 老库补列：收款码可绑定固定金额（0 = 通用/不限额）
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(qrcodes)").fetchall()}
+    if "amount" not in cols:
+        conn.execute("ALTER TABLE qrcodes ADD COLUMN amount REAL NOT NULL DEFAULT 0")
     conn.commit()
     return conn
 
@@ -113,15 +117,32 @@ def new_code(conn):
     raise RuntimeError("code alloc failed")
 
 
-def pick_qr(conn):
-    rows = conn.execute("SELECT id FROM qrcodes WHERE enabled=1").fetchall()
-    best, load_best = 0, None
-    for r in rows:
-        n = conn.execute("SELECT COUNT(*) c FROM orders WHERE qr_id=? AND status IN ('pending','claimed')",
-                         (r["id"],)).fetchone()["c"]
-        if load_best is None or n < load_best:
-            best, load_best = r["id"], n
-    return best
+def pick_qr(conn, amount=0.0):
+    """按金额挑收款码：先找绑定金额完全匹配的，再找通用码（0），都不行就退回负载最小的启用码。
+    返回 (qr_id, matched)  matched=False 表示没有合适额度，属于兜底。"""
+    rows = conn.execute("SELECT id, amount FROM qrcodes WHERE enabled=1").fetchall()
+    if not rows:
+        return 0, False
+
+    def load(qid):
+        return conn.execute("SELECT COUNT(*) c FROM orders WHERE qr_id=? AND status IN ('pending','claimed')",
+                            (qid,)).fetchone()["c"]
+
+    try:
+        target = round(float(amount), 2)
+    except (TypeError, ValueError):
+        target = 0.0
+
+    exact = [r for r in rows if abs(float(r["amount"]) - target) < 0.005]
+    if exact:
+        best = min(exact, key=lambda r: load(r["id"]))
+        return best["id"], True
+    generic = [r for r in rows if float(r["amount"]) == 0]
+    if generic:
+        best = min(generic, key=lambda r: load(r["id"]))
+        return best["id"], True
+    best = min(rows, key=lambda r: load(r["id"]))
+    return best["id"], False
 
 
 # ---------------- sub2api API ----------------
@@ -398,6 +419,8 @@ class H(BaseHTTPRequestHandler):
             return self.qr_upload()
         if p == b + "/admin/qr-toggle":
             return self.qr_toggle()
+        if p == b + "/admin/qr-bind":
+            return self.qr_bind()
         if p == b + "/admin/qr-delete":
             return self.qr_delete()
         if p == b + "/admin/confirm":
@@ -541,9 +564,10 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
             days, gid, label = 0, 0, "余额充值"
         conn = db()
         code = new_code(conn)
+        qr_id, _matched = pick_qr(conn, amount)
         conn.execute("INSERT INTO orders(code,email,amount,days,group_id,label,qr_id,status,created_at)"
                      " VALUES(?,?,?,?,?,?,?,'pending',?)",
-                     (code, email, amount, days, gid, label, pick_qr(conn), time.time()))
+                     (code, email, amount, days, gid, label, qr_id, time.time()))
         conn.commit()
         self.send_response(302)
         self.send_header("Location", self.rel("/o/" + code))
@@ -559,6 +583,23 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
         qr = ("<div class='muted'>暂无可用的收款码，请联系客服</div>" if not o["qr_id"] else
               f"<img class='qr' src='{self.rel('/qr/' + str(o['qr_id']))}' alt='收款码'>"
               f"<div class='muted' style='text-align:center'>{CONF['qr_title']}</div>")
+        qr_amt = 0.0
+        if o["qr_id"]:
+            row = conn.execute("SELECT amount FROM qrcodes WHERE id=?", (o["qr_id"],)).fetchone()
+            qr_amt = float(row["amount"]) if row else 0.0
+        if qr_amt > 0:
+            amt_txt = int(qr_amt) if qr_amt == int(qr_amt) else qr_amt
+            qr = qr + (f"<div class='muted' style='text-align:center'>这是 {CONF['currency']} {amt_txt} 的定额收款码，"
+                       f"扫码后直接付 {CONF['currency']} {amt_txt} 即可</div>")
+        elif o["qr_id"]:
+            qr = qr + (f"<div class='muted' style='text-align:center'>扫码后请手动输入金额 "
+                       f"{CONF['currency']} {o['amount']:.2f}</div>")
+        mismatch = ""
+        if qr_amt > 0 and abs(qr_amt - float(o["amount"])) > 0.005:
+            mismatch = (f"<div class='flash bad' style='margin-bottom:14px'>"
+                        f"当前只有 {CONF['currency']} {int(qr_amt) if qr_amt == int(qr_amt) else qr_amt} 的定额收款码，"
+                        f"与订单金额 {CONF['currency']} {o['amount']:.2f} 不一致。<b>请联系客服</b>确认后再付，"
+                        f"否则需要人工对账。</div>")
         claim = ""
         if o["status"] in ("pending", "rejected"):
             claim = f"""<div class="card"><h2>付完了？</h2>
@@ -576,7 +617,7 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
 <div class="row"><span>金额</span><b>{CONF['currency']} {o['amount']:.2f}</b></div>
 {f"<div class='row'><span>兑换码</span><b>{o['redeem']}</b></div>" if o['redeem'] else ""}
 <div class="muted" style="margin-top:10px">刷新面板即可看到余额 / 订阅。</div></div>"""
-        body = f"""<div class="card">
+        body = f"""{mismatch}<div class="card">
 <h2>扫码支付</h2>
 <div class="muted">{CONF['payee_note']}</div>
 {qr}
@@ -629,11 +670,23 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
         thumbs = []
         for q in qrs:
             on = q["enabled"]
+            amt = float(q["amount"] or 0)
+            amt_txt = f"{CONF['currency']} {int(amt) if amt == int(amt) else amt}" if amt > 0 else "通用（不限金额）"
+            amt_badge = ("t-claimed" if amt > 0 else "t-paid")
             thumbs.append(f"""<div class="thumb">
  <img src="{self.rel('/qr/' + str(q['id']))}?t={int(time.time())}" alt="">
  <div class="nm">{q['label'] or ('收款码 #' + str(q['id']))}</div>
+ <div class="muted" style="margin-bottom:4px">
+   <span class="tag {amt_badge}">{amt_txt}</span>
+ </div>
  <div class="muted"><span class="tag {'t-paid' if on else 't-rejected'}">{'启用中' if on else '已停用'}</span>
    · {time.strftime('%m-%d %H:%M', time.localtime(q['created_at']))}</div>
+ <form method="post" action="{self.rel('/admin/qr-bind')}" style="display:flex;gap:6px;margin-top:8px">
+   <input type="hidden" name="id" value="{q['id']}">
+   <input name="amount" value="{'' if amt == 0 else (int(amt) if amt == int(amt) else amt)}"
+          placeholder="绑定金额，0=通用" style="padding:7px 9px;font-size:13px">
+   <button class="sm ghost">绑定</button>
+ </form>
  <div class="ops">
   <form method="post" action="{self.rel('/admin/qr-toggle')}"><input type="hidden" name="id" value="{q['id']}">
    <button class="sm ghost">{'停用' if on else '启用'}</button></form>
@@ -661,6 +714,19 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
         tiers_str = ",".join(str(int(t) if t == int(t) else t) for t in tiers)
         sel_yes = " selected" if custom_ok else ""
         sel_no = "" if custom_ok else " selected"
+        # 档位覆盖检查：每个金额是否有对应定额码或通用码
+        chk_amounts = sorted({float(p["amount"]) for p in CONF["plans"]} | {float(x) for x in tiers})
+        chk = []
+        for a in chk_amounts:
+            has_generic = conn.execute("SELECT 1 FROM qrcodes WHERE enabled=1 AND amount=0").fetchone()
+            has_exact = conn.execute("SELECT 1 FROM qrcodes WHERE enabled=1 AND abs(amount-?)<0.005", (a,)).fetchone()
+            ok = bool(has_generic or has_exact)
+            shown = int(a) if a == int(a) else a
+            chk.append(f"<span class='tag {'t-paid' if ok else 't-rejected'}' style='margin:0 6px 6px 0'>"
+                       f"{CONF['currency']} {shown} {'✓' if ok else '缺码'}</span>")
+        chk_html = ("<div class='muted' style='margin-top:14px'>档位覆盖检查（缺码的金额下单会兜底用别的码，容易对不上账）：</div>"
+                    f"<div style='margin-top:8px'>{''.join(chk)}</div>")
+
         body = f"""<div class="card"><h2>收款方式</h2>
 <div class="muted">控制用户「余额充值」时能不能自己填金额，保存后立即生效（前端展示与后端校验同时改）。</div>
 <form method="post" action="{self.rel('/admin/settings')}" style="margin-top:12px">
@@ -675,11 +741,14 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
 </form></div>
 
 <div class="card"><h2>支付宝收款码</h2>
-<div class="muted">可以放多张，系统会把新订单分给「当前待处理订单最少」的启用码。停用后不再派新单，历史订单仍显示原码。</div>
+<div class="muted">可以放多张。**定额收款码请填对应金额**（如 10），系统会把该金额的订单派给它；留空/填 0 表示通用码。
+同金额有多张时，派给「当前待处理订单最少」的那张。</div>
 <div class="thumbs" style="margin-top:14px">{''.join(thumbs) or "<div class='muted'>还没有收款码，先在下面上传一张</div>"}</div>
+{chk_html}
 <label>上传新收款码（支付宝 App → 收钱 → 保存收款码）</label>
 <input type="file" id="qrf" accept="image/png,image/jpeg">
-<input id="qrl" placeholder="备注名，例如「支付宝主号」">
+<input id="qrl" placeholder="备注名，例如「支付宝 ¥10 定额」">
+<input id="qramt" placeholder="绑定金额：定额码填如 10；不限额留空" inputmode="decimal">
 <button onclick="up()">上传</button>
 <div class="muted" id="msg" style="margin-top:8px"></div>
 <script>
@@ -690,7 +759,8 @@ async function up(){{
  msg.textContent='上传中…';
  const b64=await new Promise(r=>{{const fr=new FileReader();fr.onload=()=>r(String(fr.result).split(',')[1]);fr.readAsDataURL(f);}});
  const res=await fetch('{self.rel("/admin/qr-upload")}',{{method:'POST',credentials:'same-origin',
-   headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{label:document.getElementById('qrl').value,b64:b64}})}});
+   headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{label:document.getElementById('qrl').value,
+   amount:document.getElementById('qramt').value,b64:b64}})}});
  const j=await res.json();
  msg.textContent=j.ok?('✅ 已上传：'+j.label+'，正在刷新…'):('❌ '+(j.error||'失败'));
  if(j.ok)setTimeout(()=>location.reload(),700);
@@ -747,14 +817,41 @@ async function up(){{
             return self.js({"ok": False, "error": "仅支持 PNG/JPG"}, 400)
         conn = db()
         label = (d.get("label") or "").strip()[:40]
-        cur = conn.execute("INSERT INTO qrcodes(label,file,mime,enabled,created_at) VALUES(?,?,?,1,?)",
-                           (label, "pending", mime, time.time()))
+        try:
+            qr_amount = round(float(d.get("amount") or 0), 2)
+        except (TypeError, ValueError):
+            qr_amount = 0.0
+        if qr_amount < 0:
+            qr_amount = 0.0
+        cur = conn.execute("INSERT INTO qrcodes(label,file,mime,enabled,created_at,amount) VALUES(?,?,?,1,?,?)",
+                           (label, "pending", mime, time.time(), qr_amount))
         qid = cur.lastrowid
         fn = f"qr-{qid}.{ext}"
         open(os.path.join(QR_DIR, fn), "wb").write(blob)
         conn.execute("UPDATE qrcodes SET file=? WHERE id=?", (fn, qid))
         conn.commit()
         return self.js({"ok": True, "id": qid, "label": label or f"#{qid}"})
+
+    def qr_bind(self):
+        if not self.logged_in():
+            return self.html(page("401", "<div class='card'>未登录</div>"), 401)
+        f = self.form()
+        try:
+            qid = int(f.get("id") or 0)
+        except ValueError:
+            qid = 0
+        try:
+            amt = round(float(f.get("amount") or 0), 2)
+        except (TypeError, ValueError):
+            amt = 0.0
+        if amt < 0:
+            amt = 0.0
+        conn = db()
+        conn.execute("UPDATE qrcodes SET amount=? WHERE id=?", (amt, qid))
+        conn.commit()
+        self.send_response(302)
+        self.send_header("Location", self.rel("/admin"))
+        self.end_headers()
 
     def qr_toggle(self):
         if not self.logged_in():
