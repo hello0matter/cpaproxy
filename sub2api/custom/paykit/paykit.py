@@ -24,6 +24,8 @@ DEFAULT_CONF = {
     "payee_note": "转账时请在备注里填写下方「备注码」，否则无法对账",
     "notice": "", "currency": "CNY",
     "amount_presets": [10, 50, 100, 200],
+    # true: 用户可以自己填金额；false: 只能选 amount_presets 里的固定档位
+    "allow_custom_amount": True,
     "plans": [
         {"label": "DeepSeek 日卡", "badge": "日卡", "days": 1, "amount": 9.9, "group_id": 5,
          "desc": "1 天无限量 · 支持 v4 / v4.1 flash / pro", "features": ["无限流量", "全部分组"]},
@@ -61,8 +63,45 @@ def db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL DEFAULT '',
         file TEXT NOT NULL, mime TEXT NOT NULL DEFAULT 'image/png',
         enabled INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS kv (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')""")
     conn.commit()
     return conn
+
+
+def kv_get(conn, key, default=None):
+    row = conn.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def kv_set(conn, key, value):
+    conn.execute("INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                 (key, str(value)))
+    conn.commit()
+
+
+def flag(conn, key, conf_default):
+    """后台开关优先，其次读 paykit.json"""
+    v = kv_get(conn, key)
+    if v is None:
+        return bool(conf_default)
+    return v.strip() in ("1", "true", "True", "yes")
+
+
+def allow_custom_amount(conn):
+    return flag(conn, "allow_custom_amount", CONF.get("allow_custom_amount", True))
+
+
+def presets(conn):
+    v = kv_get(conn, "amount_presets")
+    if v:
+        try:
+            arr = [float(x) for x in json.loads(v)]
+            if arr:
+                return arr
+        except Exception:  # noqa
+            pass
+    return [float(x) for x in (CONF.get("amount_presets") or [])]
 
 
 def new_code(conn):
@@ -353,6 +392,8 @@ class H(BaseHTTPRequestHandler):
             return self.claim(p.rsplit("/", 1)[-1])
         if p == b + "/admin/login":
             return self.login()
+        if p == b + "/admin/settings":
+            return self.admin_settings()
         if p == b + "/admin/qr-upload":
             return self.qr_upload()
         if p == b + "/admin/qr-toggle":
@@ -371,6 +412,12 @@ class H(BaseHTTPRequestHandler):
         nqr = conn.execute("SELECT COUNT(*) c FROM qrcodes WHERE enabled=1").fetchone()["c"]
         warn = "" if nqr else ("<div class='card'><b>⚠️ 还没有可用的收款码</b>"
                                "<div class='muted'>管理员请登录 <a href='" + self.rel('/admin') + "'>/pay/admin</a> 上传支付宝收款码。</div></div>")
+
+        custom_ok = allow_custom_amount(conn)
+        tiers = presets(conn)
+        show_topup = custom_ok or bool(tiers)
+
+        # ---- 套餐卡片 ----
         plans = ""
         for i, p in enumerate(CONF["plans"]):
             feats = "".join(f"<li>{x}</li>" for x in (p.get("features") or []))
@@ -387,35 +434,62 @@ class H(BaseHTTPRequestHandler):
     <button class="{btn}">立即购买</button>
   </form>
 </div>"""
-        presets = "".join(
-            f'<button type="button" onclick="setAmt({a})">{CONF["currency"]} {a}</button>'
-            for a in (CONF.get("amount_presets") or []))
-        body = f"""{warn}
-<div class="tabs">
-  <a class="on" href="{self.rel('/')}">订阅套餐</a>
-  <a href="#topup" onclick="document.getElementById('topup').scrollIntoView({{behavior:'smooth'}});return false;">余额充值</a>
-</div>
-<div class="card"><h2>订阅套餐</h2>
-<div class="muted" style="margin-bottom:14px">付款后自动开通，无需等待人工审核以外的时间（通常 5 分钟内）。</div>
-<div class="grid">{plans}</div></div>
 
-<div class="card" id="topup"><h2>余额充值</h2>
-<div class="muted">按实际用量扣费，适合低频使用者。</div>
-<div class="presets">{presets}</div>
+        # ---- 余额充值区 ----
+        if not show_topup:
+            topup = ""
+        elif custom_ok:
+            preset_btns = "".join(
+                f'<button type="button" onclick="setAmt({a})">{CONF["currency"]} {int(a) if a == int(a) else a}</button>'
+                for a in tiers)
+            topup = f"""<div class="card" id="topup"><h2>余额充值</h2>
+<div class="muted">按实际用量扣费，适合低频使用者。金额可自定义。</div>
+{f'<div class="presets">{preset_btns}</div>' if tiers else ''}
 <form method="post" action="{self.rel('/create')}">
   <input type="hidden" name="plan" value="-1">
   <label>充值金额（{CONF['currency']}）</label>
-  <input id="amt" name="amount" inputmode="decimal" placeholder="输入金额，例如 50">
-  <label>你的登录邮箱（必填，用于自动到账）</label>
-  <input name="email" class="js-email" type="email" required placeholder="你在 {CONF['site_name']} 注册的邮箱">
+  <input id="amt" name="amount" inputmode="decimal" placeholder="输入金额，例如 50" required>
+  <input type="hidden" name="email" class="js-email" value="">
   <button>生成收款码</button>
-</form></div>
+</form></div>"""
+        else:
+            fixed_btns = "".join(
+                f"""<form method="post" action="{self.rel('/create')}" style="margin:0">
+  <input type="hidden" name="plan" value="-1">
+  <input type="hidden" name="amount" value="{a}">
+  <input type="hidden" name="email" class="js-email" value="">
+  <button>{CONF['currency']} {int(a) if a == int(a) else a}</button>
+</form>""" for a in tiers)
+            topup = f"""<div class="card" id="topup"><h2>余额充值</h2>
+<div class="muted">请选择充值档位（固定金额）。</div>
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-top:14px">{fixed_btns}</div></div>"""
+
+        tab_topup = ('  <a href="#topup" onclick="document.getElementById(\'topup\').scrollIntoView({behavior:\'smooth\'});return false;">余额充值</a>'
+                     if show_topup else "")
+
+        body = f"""{warn}
+<div class="card">
+  <label>你的登录邮箱（必填）</label>
+  <input id="emailMain" type="email" placeholder="你在 {CONF['site_name']} 注册的邮箱" oninput="syncEmail(this.value)">
+  <div class="muted">用于自动到账，请填注册时用的邮箱</div>
+</div>
+<div class="tabs">
+  <a class="on" href="{self.rel('/')}">订阅套餐</a>
+{tab_topup}
+</div>
+<div class="card"><h2>订阅套餐</h2>
+<div class="muted" style="margin-bottom:14px">付款后自动开通（管理员核对到账，通常几分钟内）。</div>
+<div class="grid">{plans}</div></div>
+{topup}
 <script>
-function setAmt(v){{document.getElementById('amt').value=v;
- document.querySelectorAll('.presets button').forEach(b=>b.classList.remove('on'));event.target.classList.add('on');}}
-// 套餐卡片里的邮箱跟着上面的填
-document.querySelectorAll('.js-email').forEach(el=>el.addEventListener('input',()=>{{
-  document.querySelectorAll('.js-email').forEach(o=>{{if(o!==el)o.value=el.value;}});}}));
+function syncEmail(v){{document.querySelectorAll('.js-email').forEach(el=>el.value=v);}}
+function setAmt(v){{var i=document.getElementById('amt');if(i)i.value=v;
+ document.querySelectorAll('.presets button').forEach(b=>b.classList.remove('on'));
+ if(window.event&&event.target)event.target.classList.add('on');}}
+document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',function(e){{
+  var m=document.getElementById('emailMain');
+  if(m&&!m.value.trim()){{e.preventDefault();m.focus();alert('请先填写你的登录邮箱');}}
+}}));
 </script>"""
         self.html(page("扫码充值", body))
 
@@ -444,13 +518,27 @@ document.querySelectorAll('.js-email').forEach(el=>el.addEventListener('input',(
             p = CONF["plans"][idx]
             amount, days, gid, label = float(p["amount"]), int(p.get("days", 0)), int(p.get("group_id", 0)), p["label"]
         else:
-            try:
-                amount = round(float(f.get("amount") or 0), 2)
-            except ValueError:
-                amount = 0
+            conn0 = db()
+            if not allow_custom_amount(conn0):
+                # 后台关闭了自定义金额：只接受预设档位（服务端强校验，防绕过）
+                allowed = [round(float(x), 2) for x in presets(conn0)]
+                try:
+                    amount = round(float(f.get("amount") or 0), 2)
+                except ValueError:
+                    amount = 0
+                if amount not in allowed:
+                    opts = "、".join(f"{CONF['currency']} {(int(a) if a == int(a) else a)}" for a in allowed) or "无"
+                    return self.html(page("金额不支持", f"<div class='card'><b>只支持固定档位</b>"
+                                                      f"<div class='muted'>可选：{opts}</div>"
+                                                      f"<p><a href='{self.rel('/')}'>← 返回</a></p></div>"), 400)
+            else:
+                try:
+                    amount = round(float(f.get("amount") or 0), 2)
+                except ValueError:
+                    amount = 0
+                if amount <= 0:
+                    return self.html(page("金额有误", "<div class='card'>请输入大于 0 的金额</div>"), 400)
             days, gid, label = 0, 0, "余额充值"
-            if amount <= 0:
-                return self.html(page("金额有误", "<div class='card'>请输入大于 0 的金额</div>"), 400)
         conn = db()
         code = new_code(conn)
         conn.execute("INSERT INTO orders(code,email,amount,days,group_id,label,qr_id,status,created_at)"
@@ -568,7 +656,25 @@ document.querySelectorAll('.js-email').forEach(el=>el.addEventListener('input',(
                        f"<td>{o['email']}<div class='muted'>{o['label']}</div></td>"
                        f"<td><b>{CONF['currency']} {o['amount']:.2f}</b></td>"
                        f"<td><span class='tag {t}'>{x}</span><div class='muted'>{o['payer']}</div></td><td>{acts}</td></tr>")
-        body = f"""<div class="card"><h2>支付宝收款码</h2>
+        custom_ok = allow_custom_amount(conn)
+        tiers = presets(conn)
+        tiers_str = ",".join(str(int(t) if t == int(t) else t) for t in tiers)
+        sel_yes = " selected" if custom_ok else ""
+        sel_no = "" if custom_ok else " selected"
+        body = f"""<div class="card"><h2>收款方式</h2>
+<div class="muted">控制用户「余额充值」时能不能自己填金额，保存后立即生效（前端展示与后端校验同时改）。</div>
+<form method="post" action="{self.rel('/admin/settings')}" style="margin-top:12px">
+  <label>充值金额模式</label>
+  <select name="allow_custom">
+    <option value="1"{sel_yes}>允许自定义金额（用户自己填）</option>
+    <option value="0"{sel_no}>仅固定档位（只能选下面的金额）</option>
+  </select>
+  <label>固定档位（逗号分隔，例如 10,50,100,200）</label>
+  <input name="presets" value="{tiers_str}" placeholder="10,50,100,200">
+  <button>保存</button>
+</form></div>
+
+<div class="card"><h2>支付宝收款码</h2>
 <div class="muted">可以放多张，系统会把新订单分给「当前待处理订单最少」的启用码。停用后不再派新单，历史订单仍显示原码。</div>
 <div class="thumbs" style="margin-top:14px">{''.join(thumbs) or "<div class='muted'>还没有收款码，先在下面上传一张</div>"}</div>
 <label>上传新收款码（支付宝 App → 收钱 → 保存收款码）</label>
@@ -596,6 +702,29 @@ async function up(){{
 <table style="margin-top:10px"><tr><th>备注码</th><th>用户</th><th>金额</th><th>状态</th><th>操作</th></tr>
 {''.join(trs) or "<tr><td colspan=5 class='muted'>暂无订单</td></tr>"}</table></div>"""
         self.html(page("管理后台", body, admin=True))
+
+    def admin_settings(self):
+        if not self.logged_in():
+            return self.html(page("401", "<div class='card'>未登录</div>"), 401)
+        f = self.form()
+        conn = db()
+        kv_set(conn, "allow_custom_amount", "1" if (f.get("allow_custom") == "1") else "0")
+        raw = (f.get("presets") or "").replace("，", ",")
+        vals = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                v = round(float(part), 2)
+                if v > 0:
+                    vals.append(v)
+            except ValueError:
+                continue
+        kv_set(conn, "amount_presets", json.dumps(vals))
+        self.send_response(302)
+        self.send_header("Location", self.rel("/admin"))
+        self.end_headers()
 
     def qr_upload(self):
         if not self.logged_in():
