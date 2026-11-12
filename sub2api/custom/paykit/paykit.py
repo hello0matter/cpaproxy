@@ -312,6 +312,15 @@ a{color:var(--brand-dark);text-decoration:none}
 .dd-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;font-size:14px;font-weight:500;margin:0;cursor:pointer}
 .dd-item:hover{background:#f1f5f9}
 .dd-item input{width:16px;height:16px;margin:0}
+/* 表格内的小号控件 */
+.tblwrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:12px;padding-bottom:4px}
+.tblwrap table{min-width:760px}
+.tblwrap th,.tblwrap td{padding:8px 6px}
+.tblwrap input{padding:8px 10px;font-size:13px;border-radius:9px}
+select.mini{appearance:none;-webkit-appearance:none;-moz-appearance:none;
+  padding:8px 30px 8px 10px;font-size:13px;border-radius:10px;border:1px solid #d7dee8;background-color:#fff;
+  background-image:url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%236b7280' d='M6 8 0 0h12z'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 10px center;background-size:10px}
 """
 
 
@@ -719,9 +728,8 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
 </div>"""))
         conn = db()
         qrs = conn.execute("SELECT * FROM qrcodes ORDER BY enabled DESC, id DESC").fetchall()
-        bind_choices = sorted({1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 50.0, 70.0, 100.0, 120.0, 150.0, 200.0}
-                              | {round(float(p["amount"]), 2) for p in (CONF.get("plans") or [])}
-                              | {round(float(t), 2) for t in presets(conn)}
+        bind_choices = sorted({round(float(t), 2) for t in presets(conn)}
+                              | {round(float(p["amount"]), 2) for p in site_plans(conn)}
                               | {round(float(q["amount"]), 2) for q in qrs if float(q["amount"] or 0) > 0})
         thumbs = []
         for q in qrs:
@@ -739,7 +747,7 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
    · {time.strftime('%m-%d %H:%M', time.localtime(q['created_at']))}</div>
  <form method="post" action="{self.rel('/admin/qr-bind')}" style="display:flex;gap:6px;margin-top:8px">
    <input type="hidden" name="id" value="{q['id']}">
-   <select name="amount" style="padding:7px 9px;font-size:13px">
+   <select class="mini" name="amount">
      <option value="0"{' selected' if amt == 0 else ''}>通用（不限额）</option>
      {''.join(f'<option value="{int(a) if a == int(a) else a}"'
               f'{" selected" if abs(amt - a) < 0.005 else ""}>{CONF["currency"]} {int(a) if a == int(a) else a}</option>'
@@ -827,9 +835,11 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
         plans_card = f"""<div class="card"><h2>套餐（价格 / 天数）</h2>
 <div class="muted">价格随便定，前端就按这里展示；用户拿到的权益只跟「天数」有关（1=日卡、7=周卡、30=月卡、14=两周…）。
 分组 ID 决定开通到哪个分组（当前 8888ok官转 = 5）。</div>
-<table style="margin-top:12px">
+<div class="tblwrap">
+<table>
 <thead><tr><th>名称</th><th>徽标</th><th>价格</th><th>天数</th><th>描述</th><th>权益(逗号)</th><th>分组ID</th><th></th></tr></thead>
 <tbody id="planBody">{plan_rows}</tbody></table>
+</div>
 <div style="display:flex;gap:8px;margin-top:12px">
  <button type="button" class="sm ghost" onclick="addPlanRow()">+ 新增一档</button>
  <button type="button" class="sm" onclick="savePlans()">保存套餐</button>
