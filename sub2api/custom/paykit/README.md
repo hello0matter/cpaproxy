@@ -17,8 +17,16 @@ sub2api 的 `settings.custom_menu_items` 里加了两项，按角色显示：
 
 | 菜单 | 谁看得到 | 指向 |
 | --- | --- | --- |
-| **充值** | 普通用户 | `https://www.hacket.top/pay/` |
-| **收款配置** | 管理员 | `https://www.hacket.top/pay/admin` |
+| **Recharge** | 普通用户 | `https://www.hacket.top/pay/` |
+| **Payment Setup** | 管理员 | `https://www.hacket.top/pay/admin` |
+
+图标用 `icon_svg` 字段（与内置菜单同款 stroke 风格）：
+用户项是信用卡图标，管理项是齿轮图标。
+
+> ⚠️ sub2api 的自定义菜单**只有一个 `label` 字段，没有多语言字段**（后端 `dto.CustomMenuItem` 只有
+> `id / label / icon_svg / url / page_slug / visibility / sort_order`）。
+> 所以没法做到"英文界面显示英文、中文界面显示中文"。当前按站点界面语言（英文）配成英文；
+> 若要中文界面，把 label 改成「充值 / 收款配置」即可，或者需要自建镜像改后端给它加 i18n 字段。
 
 > 用数据库直接改 `custom_menu_items`（JSON 数组），**不要**走 `PUT /api/v1/admin/settings` ——
 > 那个接口的 `UpdateSettingsRequest` 里很多字段是非指针 bool，局部提交会把注册开关等一起冲成 false。
