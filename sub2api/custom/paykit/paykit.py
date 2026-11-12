@@ -525,6 +525,7 @@ class H(BaseHTTPRequestHandler):
         tab_topup = ('  <a href="#topup" onclick="document.getElementById(\'topup\').scrollIntoView({behavior:\'smooth\'});return false;">余额充值</a>'
                      if show_topup else "")
 
+        default_tab = "topup" if show_topup else "plans"
         body = f"""{warn}
 <div class="card">
   <label>你的登录邮箱（必填）</label>
@@ -532,16 +533,26 @@ class H(BaseHTTPRequestHandler):
   <div class="muted" id="autoTip">用于自动到账；如果你已登录 {CONF['site_name']}，这里会自动填好</div>
 </div>
 <div class="tabs">
-  <a class="on" href="#topup">充值</a>
-  <a href="#plans">订阅套餐</a>
+  <a class="{'on' if default_tab == 'topup' else ''}" onclick="showTab('topup',this);return false;">充值</a>
+  <a class="{'on' if default_tab == 'plans' else ''}" onclick="showTab('plans',this);return false;">订阅套餐</a>
 </div>
-{topup}
-<div class="card" id="plans"><h2>订阅套餐</h2>
-<div class="muted" style="margin-bottom:14px">付款后自动开通（管理员核对到账，通常几分钟内）。</div>
-<div class="grid">{plans}</div></div>
+<div id="tab-topup" style="{'display:none' if default_tab != 'topup' else ''}">{topup}</div>
+<div id="tab-plans" style="{'display:none' if default_tab != 'plans' else ''}">
+  <div class="card"><h2>订阅套餐</h2>
+  <div class="muted" style="margin-bottom:14px">付款后自动开通（管理员核对到账，通常几分钟内）。</div>
+  <div class="grid">{plans}</div></div>
+</div>
 <script>
 function syncEmail(v){{document.querySelectorAll('.js-email').forEach(el=>el.value=v);}}
 function setAmt(v){{var i=document.getElementById('amt');if(i)i.value=v;}}
+function showTab(name, el){{
+  ['topup','plans'].forEach(function(t){{
+    var s=document.getElementById('tab-'+t);
+    if(s) s.style.display = (t===name)?'':'none';
+  }});
+  document.querySelectorAll('.tabs a').forEach(a=>a.classList.remove('on'));
+  if(el) el.classList.add('on');
+}}
 document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',function(e){{
   var m=document.getElementById('emailMain');
   if(m&&!m.value.trim()){{e.preventDefault();m.focus();alert('请先填写你的登录邮箱');}}
