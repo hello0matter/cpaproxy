@@ -1,0 +1,71 @@
+# =============================================================================
+# Sub2API —— 复用已有 postgres / redis 的部署编排
+# -----------------------------------------------------------------------------
+# 与上游 deploy/docker-compose.yml 的区别：
+#   1. 不启动自带的 postgres / redis，直接接入现有 docker 网络 ai-gateway；
+#   2. 应用只绑 127.0.0.1，外部访问交给 nginx；
+#   3. 加了内存上限，避免挤掉宿主机上已有的 new-api / cli-proxy-api 等。
+#
+# 用法：
+#   cd /root/cpaproxy/sub2api/custom
+#   cp .env.example .env && vi .env
+#   docker compose -f docker-compose.reuse.yaml --env-file .env up -d
+# =============================================================================
+
+services:
+  sub2api:
+    image: ${SUB2API_IMAGE:-weishaw/sub2api:0.2.21}
+    container_name: ${CONTAINER_NAME:-sub2api}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:${HOST_PORT:-18080}:${CONTAINER_PORT:-8080}"
+    volumes:
+      - ${DATA_DIR:-/root/cpaproxy/sub2api/data}:/app/data
+    environment:
+      # 首次启动自动建表、建管理员、写 config.yaml
+      AUTO_SETUP: "true"
+      TZ: ${TZ:-Asia/Shanghai}
+
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: ${CONTAINER_PORT:-8080}
+      SERVER_MODE: release
+      ENABLE_SERVER_TIMING: "false"
+
+      # 复用现有的 postgres 容器
+      DATABASE_HOST: ${DATABASE_HOST:-postgres}
+      DATABASE_PORT: ${DATABASE_PORT:-5432}
+      DATABASE_USER: ${DATABASE_USER:-root}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      DATABASE_DBNAME: ${DATABASE_DBNAME:-sub2api}
+      DATABASE_SSLMODE: ${DATABASE_SSLMODE:-disable}
+      DATABASE_MAX_OPEN_CONNS: ${DATABASE_MAX_OPEN_CONNS:-20}
+      DATABASE_MAX_IDLE_CONNS: ${DATABASE_MAX_IDLE_CONNS:-10}
+
+      # 复用现有的 redis 容器（用独立 db 号隔离）
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-3}
+
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:-}
+    mem_limit: ${MEMORY_LIMIT:-384m}
+    memswap_limit: ${MEMORY_SWAP:-768m}
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    networks:
+      - ai-gateway
+
+networks:
+  ai-gateway:
+    external: true

@@ -1,5 +1,9 @@
 # cliproxy 对话日志监控
 
+> 另见 [`sub2api/`](./sub2api)：上游 [Sub2API](https://github.com/Wei-Shaw/sub2api) `v0.2.21`
+> 源码快照 + 本项目的定制部署套件（默认复用现有 postgres/redis，只绑 127.0.0.1:18080）。
+> 部署说明看 [`sub2api/custom/DEPLOY.md`](./sub2api/custom/DEPLOY.md)。
+
 ## 这个目录是干嘛的
 把 cliproxy 的原始请求/响应日志，精简成“用户提问 + AI 输出 + 图片附件”，存成 SQLite 数据库、JSONL 和图片文件，方便以后搜索或喂给 AI。
 
