@@ -11,6 +11,27 @@
 
 **管理员口令**存放在服务器 `/root/cpaproxy/sub2api/paykit/paykit.json` 的 `admin_pass` 字段（本文件不入库）。
 
+## 站内导航入口（已配置）
+
+sub2api 的 `settings.custom_menu_items` 里加了两项，按角色显示：
+
+| 菜单 | 谁看得到 | 指向 |
+| --- | --- | --- |
+| **充值** | 普通用户 | `https://www.hacket.top/pay/` |
+| **收款配置** | 管理员 | `https://www.hacket.top/pay/admin` |
+
+> 用数据库直接改 `custom_menu_items`（JSON 数组），**不要**走 `PUT /api/v1/admin/settings` ——
+> 那个接口的 `UpdateSettingsRequest` 里很多字段是非指针 bool，局部提交会把注册开关等一起冲成 false。
+
+## 实测记录（2026-11-12）
+
+| 场景 | 结果 |
+| --- | --- |
+| 普通用户 `gcsdfaksh@gmail.com` 充值 ¥5 | 余额 `0.00 → 5.00` ✅ |
+| 重复点「确认到账」 | `该订单已到账，未重复处理`（幂等）✅ |
+| 管理员余额 | 不受影响 ✅ |
+| 游客看到的自定义菜单 | 只有「充值」；「收款配置」仅管理员可见 ✅ |
+
 ## 使用流程
 
 ### 管理员（一次性配置）
