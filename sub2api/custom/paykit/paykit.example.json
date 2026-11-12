@@ -1,0 +1,19 @@
+{
+  "listen": "127.0.0.1",
+  "port": 18081,
+  "base_path": "/pay",
+  "base_url": "http://127.0.0.1:18080",
+  "admin_email": "admin@hacket.top",
+  "admin_password": "CHANGE_ME_admin_login_password",
+  "admin_user": "admin",
+  "admin_pass": "CHANGE_ME_paykit_admin_page_password",
+  "qr_image": "qr.png",
+  "qr_title": "支付宝收款码",
+  "payee_note": "转账时请在备注里填写下方「备注码」，否则无法对账",
+  "currency": "CNY",
+  "plans": [
+    { "label": "DeepSeek 日卡 (1 天)", "days": 1, "amount": 9.9, "group_id": 5 },
+    { "label": "DeepSeek 周卡 (7 天)", "days": 7, "amount": 49, "group_id": 5 },
+    { "label": "DeepSeek 月卡 (30 天)", "days": 30, "amount": 159, "group_id": 5 }
+  ]
+}

@@ -1,0 +1,17 @@
+[Unit]
+Description=paykit - personal QR payment verification desk for sub2api
+After=network.target docker.service
+Documentation=file:/root/cpaproxy/sub2api/paykit/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=/root/cpaproxy/sub2api/paykit
+ExecStart=/usr/bin/python3 /root/cpaproxy/sub2api/paykit/paykit.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+# 只监听 127.0.0.1，外部访问一律走 nginx 反代
+
+[Install]
+WantedBy=multi-user.target
