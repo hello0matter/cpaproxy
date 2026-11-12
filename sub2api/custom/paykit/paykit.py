@@ -462,12 +462,8 @@ class H(BaseHTTPRequestHandler):
         if not show_topup:
             topup = ""
         elif custom_ok:
-            preset_btns = "".join(
-                f'<button type="button" onclick="setAmt({a})">{CONF["currency"]} {int(a) if a == int(a) else a}</button>'
-                for a in tiers)
             topup = f"""<div class="card" id="topup"><h2>余额充值</h2>
-<div class="muted">按实际用量扣费，适合低频使用者。金额可自定义。</div>
-{f'<div class="presets">{preset_btns}</div>' if tiers else ''}
+<div class="muted">按实际用量扣费，金额自己填；下单后使用「自定义金额收款码」（不限额）。</div>
 <form method="post" action="{self.rel('/create')}">
   <input type="hidden" name="plan" value="-1">
   <label>充值金额（{CONF['currency']}）</label>
@@ -580,20 +576,44 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
             return self.html(page("订单不存在", "<div class='card'>订单不存在</div>"), 404)
         tag = {"pending": "t-pending", "claimed": "t-claimed", "paid": "t-paid", "rejected": "t-rejected"}.get(o["status"], "")
         txt = {"pending": "等待转账", "claimed": "已提交，等待核验", "paid": "已到账", "rejected": "已驳回"}.get(o["status"], o["status"])
-        qr = ("<div class='muted'>暂无可用的收款码，请联系客服</div>" if not o["qr_id"] else
-              f"<img class='qr' src='{self.rel('/qr/' + str(o['qr_id']))}' alt='收款码'>"
-              f"<div class='muted' style='text-align:center'>{CONF['qr_title']}</div>")
+        # ---- 选码：金额精确匹配 > 通用码（不限额） > 兜底 ----
+        rows = conn.execute("SELECT id,label,amount FROM qrcodes WHERE enabled=1").fetchall()
+        amt_o = round(float(o["amount"]), 2)
+        exact = [r for r in rows if abs(float(r["amount"]) - amt_o) < 0.005]
+        generic = [r for r in rows if float(r["amount"]) == 0]
+        cand = exact or generic or list(rows)
         qr_amt = 0.0
-        if o["qr_id"]:
-            row = conn.execute("SELECT amount FROM qrcodes WHERE id=?", (o["qr_id"],)).fetchone()
-            qr_amt = float(row["amount"]) if row else 0.0
-        if qr_amt > 0:
-            amt_txt = int(qr_amt) if qr_amt == int(qr_amt) else qr_amt
-            qr = qr + (f"<div class='muted' style='text-align:center'>这是 {CONF['currency']} {amt_txt} 的定额收款码，"
-                       f"扫码后直接付 {CONF['currency']} {amt_txt} 即可</div>")
-        elif o["qr_id"]:
-            qr = qr + (f"<div class='muted' style='text-align:center'>扫码后请手动输入金额 "
-                       f"{CONF['currency']} {o['amount']:.2f}</div>")
+        if not cand:
+            qr = "<div class='muted'>暂无可用的收款码，请联系客服</div>"
+            picker = ""
+        else:
+            first = cand[0]
+            qr_amt = float(first["amount"])
+            amt_shown = int(qr_amt) if qr_amt == int(qr_amt) else qr_amt
+            if qr_amt > 0:
+                tip = (f"<div class='muted' style='text-align:center'>这是 {CONF['currency']} {amt_shown} 的<b>定额收款码</b>，"
+                       f"扫码后直接付 {CONF['currency']} {amt_shown} 即可</div>")
+            else:
+                tip = (f"<div class='muted' style='text-align:center'>这是<b>自定义金额收款码</b>，"
+                       f"扫码后请输入 {CONF['currency']} {amt_o:.2f}</div>")
+            qr = (f"<img class='qr' id='qrimg' src='{self.rel('/qr/' + str(first['id']))}' alt='收款码'>"
+                  f"<div class='muted' style='text-align:center'>{CONF['qr_title']}</div>{tip}")
+            picker = ""
+            if len(cand) > 1:
+                btns = []
+                for idx, r in enumerate(cand):
+                    lbl = r["label"] or f"码#{r['id']}"
+                    a = float(r["amount"])
+                    tail = "（自定义金额）" if a == 0 else f"（定额 {int(a) if a == int(a) else a}）"
+                    btns.append(f"""<button type="button" class="sm {'hero-btn' if idx == 0 else 'ghost'} selqr"
+  data-src="{self.rel('/qr/' + str(r['id']))}">{lbl}{tail}</button>""")
+                picker = ("<div class='muted' style='margin-top:12px;text-align:center'>可选收款码（点一下切换）</div>"
+                          f"<div style='display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:8px'>{''.join(btns)}</div>"
+                          "<script>document.querySelectorAll('.selqr').forEach(function(b){"
+                          "b.addEventListener('click',function(){"
+                          "document.getElementById('qrimg').src=this.dataset.src;"
+                          "document.querySelectorAll('.selqr').forEach(function(o){o.classList.remove('hero-btn');o.classList.add('ghost');});"
+                          "this.classList.remove('ghost');this.classList.add('hero-btn');});});</script>")
         mismatch = ""
         if qr_amt > 0 and abs(qr_amt - float(o["amount"])) > 0.005:
             mismatch = (f"<div class='flash bad' style='margin-bottom:14px'>"
@@ -621,6 +641,7 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
 <h2>扫码支付</h2>
 <div class="muted">{CONF['payee_note']}</div>
 {qr}
+{picker}
 <div class="amount">{CONF['currency']} {o['amount']:.2f}</div>
 <div class="code">{o['code']}</div>
 <div class="row"><span>权益</span><b>{o['label']}</b></div>
@@ -714,31 +735,60 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
         tiers_str = ",".join(str(int(t) if t == int(t) else t) for t in tiers)
         sel_yes = " selected" if custom_ok else ""
         sel_no = "" if custom_ok else " selected"
-        # 档位覆盖检查：每个金额是否有对应定额码或通用码
-        chk_amounts = sorted({float(p["amount"]) for p in CONF["plans"]} | {float(x) for x in tiers})
-        chk = []
-        for a in chk_amounts:
-            has_generic = conn.execute("SELECT 1 FROM qrcodes WHERE enabled=1 AND amount=0").fetchone()
-            has_exact = conn.execute("SELECT 1 FROM qrcodes WHERE enabled=1 AND abs(amount-?)<0.005", (a,)).fetchone()
-            ok = bool(has_generic or has_exact)
+        # 档位覆盖检查：区分「套餐价」与「充值档位」，并按当前模式判断
+        def has_code(a):
+            if conn.execute("SELECT 1 FROM qrcodes WHERE enabled=1 AND amount=0").fetchone():
+                return True
+            return bool(conn.execute("SELECT 1 FROM qrcodes WHERE enabled=1 AND abs(amount-?)<0.005", (a,)).fetchone())
+
+        def tag(a, ok, key):
             shown = int(a) if a == int(a) else a
-            chk.append(f"<span class='tag {'t-paid' if ok else 't-rejected'}' style='margin:0 6px 6px 0'>"
-                       f"{CONF['currency']} {shown} {'✓' if ok else '缺码'}</span>")
-        chk_html = ("<div class='muted' style='margin-top:14px'>档位覆盖检查（缺码的金额下单会兜底用别的码，容易对不上账）：</div>"
-                    f"<div style='margin-top:8px'>{''.join(chk)}</div>")
+            return (f"<span class='tag {'t-paid' if ok else 't-rejected'}' style='margin:0 6px 6px 0'>"
+                    f"{key} {CONF['currency']} {shown} {'✓' if ok else '缺码'}</span>")
+
+        plan_prices = sorted({round(float(p["amount"]), 2) for p in CONF["plans"]})
+        plan_tags = "".join(tag(a, has_code(a), "套餐") for a in plan_prices)
+        n_generic = conn.execute("SELECT COUNT(*) c FROM qrcodes WHERE enabled=1 AND amount=0").fetchone()["c"]
+        if custom_ok:
+            topup_line = (f"<div style='margin-top:10px' class='muted'>自定义金额："
+                          f"<span class='tag {'t-paid' if n_generic else 't-rejected'}'>"
+                          f"通用收款码 {n_generic} 张{'✓' if n_generic else '（缺，需上传不限额码）'}</span></div>")
+        else:
+            tier_tags = "".join(tag(a, has_code(a), "档位") for a in tiers) or "<span class='muted'>未设置档位</span>"
+            topup_line = f"<div style='margin-top:10px' class='muted'>充值档位：</div><div style='margin-top:6px'>{tier_tags}</div>"
+        chk_html = ("<div class='muted' style='margin-top:14px'>收款码覆盖检查：</div>"
+                    f"<div style='margin-top:6px' class='muted'>套餐价：</div><div style='margin-top:6px'>{plan_tags}</div>"
+                    f"{topup_line}")
+
+        tier_opts = sorted({10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0}
+                           | set(plan_prices)
+                           | {round(float(t), 2) for t in tiers})
+        opts_html = "".join(
+            f'<option value="{int(a) if a == int(a) else a}"'
+            f'{" selected" if any(abs(a - t) < 0.005 for t in tiers) else ""}>'
+            f'{CONF["currency"]} {int(a) if a == int(a) else a}</option>'
+            for a in tier_opts)
 
         body = f"""<div class="card"><h2>收款方式</h2>
 <div class="muted">控制用户「余额充值」时能不能自己填金额，保存后立即生效（前端展示与后端校验同时改）。</div>
-<form method="post" action="{self.rel('/admin/settings')}" style="margin-top:12px">
+<form method="post" action="{self.rel('/admin/settings')}" onsubmit="return collectTiers()" style="margin-top:12px">
   <label>充值金额模式</label>
   <select name="allow_custom">
-    <option value="1"{sel_yes}>允许自定义金额（用户自己填）</option>
-    <option value="0"{sel_no}>仅固定档位（只能选下面的金额）</option>
+    <option value="1"{sel_yes}>允许自定义金额（用户自己填，用不限额收款码）</option>
+    <option value="0"{sel_no}>仅固定档位（用户只能选下面金额）</option>
   </select>
-  <label>固定档位（逗号分隔，例如 10,50,100,200）</label>
-  <input name="presets" value="{tiers_str}" placeholder="10,50,100,200">
+  <label>固定档位（下拉可多选，仅「仅固定档位」模式生效）</label>
+  <select id="tierSel" multiple size="7" style="padding:8px">
+    {opts_html}
+  </select>
+  <input type="hidden" name="presets" id="tierHidden" value="{tiers_str}">
+  <div class="muted">套餐卡片价格不受这里影响，始终按卡片价收款。</div>
   <button>保存</button>
 </form></div>
+<script>
+function collectTiers(){{var s=document.getElementById('tierSel');
+ document.getElementById('tierHidden').value=Array.from(s.selectedOptions).map(o=>o.value).join(',');return true;}}
+</script>
 
 <div class="card"><h2>支付宝收款码</h2>
 <div class="muted">可以放多张。**定额收款码请填对应金额**（如 10），系统会把该金额的订单派给它；留空/填 0 表示通用码。
