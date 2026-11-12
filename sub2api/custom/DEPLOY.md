@@ -12,6 +12,18 @@
 | 管理员 | `admin@hacket.top`（密码见交付说明，未入库） |
 | 站点名 | `CPAPROXY`（已写入 settings 并生效，页面标题 `CPAPROXY - AI API Gateway`） |
 | 资源占用 | 容器 ~76 MB / 384 MB 上限；宿主机磁盘剩余约 1.2 GB |
+| 公网入口 | **https://www.hacket.top/**（nginx 反代 → 127.0.0.1:18080） |
+| 主域 | `https://hacket.top/` 仍是原来的 iframe-host 站点，未改动 |
+| 上游 | 见 [`UPSTREAM-MAPPING.md`](./UPSTREAM-MAPPING.md)：CPA 的 gpt plus + 8888ok 直连可用 |
+
+nginx 变更（2026-11-12）：原来 `hacket.top` 与 `www.hacket.top` 是同一个 vhost，都反代 `127.0.0.1:3030`。
+现在拆成两个：`www.hacket.top` → sub2api(18080)，`hacket.top` → 原站(3030)。
+原配置备份在服务器 `/root/nginx-backup/iframe-host.conf.orig-20261112`，回滚：
+
+```bash
+cp /root/nginx-backup/iframe-host.conf.orig-20261112 /etc/nginx/sites-available/iframe-host.conf
+nginx -t && systemctl reload nginx
+```
 
 本机访问（推荐 SSH 隧道，不用对外开放端口）：
 
