@@ -473,7 +473,8 @@ class H(BaseHTTPRequestHandler):
 
         custom_ok = allow_custom_amount(conn)
         tiers = presets(conn)
-        show_topup = custom_ok or bool(tiers)
+        # 固定档位模式：只卖套餐，不再显示「余额充值」区块
+        show_topup = custom_ok
 
         # ---- 套餐卡片 ----
         plan_list = site_plans(conn)
@@ -802,8 +803,9 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
                           f"<span class='tag {'t-paid' if n_generic else 't-rejected'}'>"
                           f"通用收款码 {n_generic} 张{'✓' if n_generic else '（缺，需上传不限额码）'}</span></div>")
         else:
-            tier_tags = "".join(tag(a, has_code(a), "档位") for a in tiers) or "<span class='muted'>未设置档位</span>"
-            topup_line = f"<div style='margin-top:10px' class='muted'>充值档位：</div><div style='margin-top:6px'>{tier_tags}</div>"
+            topup_line = ("<div style='margin-top:10px' class='muted'>"
+                          "当前为「仅固定档位」模式：用户端只显示套餐，不显示余额充值。"
+                          "下面的档位仅用于收款码绑定候选。</div>")
         chk_html = ("<div class='muted' style='margin-top:14px'>收款码覆盖检查：</div>"
                     f"<div style='margin-top:6px' class='muted'>套餐价：</div><div style='margin-top:6px'>{plan_tags}</div>"
                     f"{topup_line}")
@@ -847,12 +849,12 @@ document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',functio
 <div class="muted" id="pmsg" style="margin-top:8px"></div>
 <script>
 function rowHtml(){{return `<tr>
- <td><input class="pn" placeholder="DeepSeek 日卡"></td>
- <td><input class="pb" placeholder="日卡" style="width:70px"></td>
- <td><input class="pp" placeholder="9.9" inputmode="decimal" style="width:90px"></td>
- <td><input class="pd" placeholder="1" inputmode="numeric" style="width:70px"></td>
- <td><input class="pdesc" placeholder="1 天无限量"></td>
- <td><input class="pf" placeholder="无限流量,优先线路"></td>
+ <td><input class="pn" placeholder="套餐名称"></td>
+ <td><input class="pb" placeholder="徽标" style="width:70px"></td>
+ <td><input class="pp" placeholder="价格" inputmode="decimal" style="width:90px"></td>
+ <td><input class="pd" placeholder="天数" inputmode="numeric" style="width:70px"></td>
+ <td><input class="pdesc" placeholder="一句话描述"></td>
+ <td><input class="pf" placeholder="权益,逗号分隔"></td>
  <td><input class="pg" placeholder="5" inputmode="numeric" style="width:70px"></td>
  <td><button type="button" class="sm danger" onclick="this.closest('tr').remove()">删</button></td>
 </tr>`;}}
@@ -883,9 +885,9 @@ async function savePlans(){{
   <label>充值金额模式</label>
   <select name="allow_custom">
     <option value="1"{sel_yes}>允许自定义金额（用户自己填，用不限额收款码）</option>
-    <option value="0"{sel_no}>仅固定档位（用户只能选下面金额）</option>
+    <option value="0"{sel_no}>仅固定档位（用户端只卖套餐，不显示余额充值）</option>
   </select>
-  <label>固定档位（下拉多选，仅「仅固定档位」模式生效）</label>
+  <label>固定档位（下拉多选；仅作收款码绑定候选）</label>
   <div class="dd" id="tierDD">
     <button type="button" class="dd-btn" onclick="document.getElementById('tierDD').classList.toggle('open')">
       <span id="tierText">—</span><span>▾</span>
